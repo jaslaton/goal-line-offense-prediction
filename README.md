@@ -1,5 +1,5 @@
 ## Project overview
-This project is a work-through of analyzing NFL play-by-play data using Bayesian modeling.
+This project is a work-through for analyzing NFL play-by-play data using Bayesian modeling.
 
 ## Thanks
 Thank you to those that maintain `nflfastR` for making it possible to play around with NFL data!
