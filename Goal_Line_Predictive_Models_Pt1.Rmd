@@ -1,5 +1,5 @@
 ---
-title: "Predicting Goal-to-go Offensive Play Call Probability"
+title: "Predicting Goal-to-go Offensive Play Call Proability"
 author: "Jake Slaton"
 output:
         html_document:
