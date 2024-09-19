@@ -21,15 +21,18 @@ library(tidyverse)
 library(janitor)
 library(ggstats)
 library(gtsummary)
+library(gt)
 library(nflfastR)
 library(rstanarm)
 library(bayesplot)
+library(tidybayes)
+library(broom.mixed)
 ```
 
 
 ```{r data-wrangling}
 ## 2022 NFL play-by-play data
-pbp_raw <- load_pbp(2023)
+pbp_raw <- load_pbp(2024)
 
 ## Data frame for goal-to-go data
 goal_offense <- pbp_raw %>% 
@@ -37,17 +40,16 @@ goal_offense <- pbp_raw %>%
         !is.na(goal_to_go),
         !is.na(yardline_100),
         !is.na(play_type),
-        goal_to_go > 0,
+        goal_to_go == 1,
         play_type %in% c("pass", "run")
     ) %>% 
     mutate(
         down = as.factor(down),
-        pass = factor(play_type, levels = c("run", "pass"))
+        play_type = factor(play_type, levels = c("run", "pass"))
     ) %>% 
     select(
         posteam,
         week,
-        pass,
         goal_to_go,
         yardline_100,
         down,
@@ -57,52 +59,30 @@ goal_offense <- pbp_raw %>%
     )
 
 
-## For this scenario, I am pretending we have only completed 17 weeks of the 2023
-## season.
-goal_offense_wk_17 <- goal_offense %>% 
-    filter(week < 17)
-
-szn_epa <- pbp_raw %>%
-    filter(play_type %in% c("run", "pass"),
-           !is.na(epa),
-           week < 17) %>% 
-    group_by(posteam, play_type) %>%
-    summarize(epa_per_play = mean(epa)) %>%
-    pivot_wider(
-        names_from = play_type,
-        values_from = epa_per_play,
-        names_prefix = "szn_epa_"
-    )
-
-## Visualize best and worst offenses
-szn_epa %>% 
-    ggplot(aes(x = szn_epa_pass, y = szn_epa_run)) +
-    geom_text(aes(label = posteam)) +
-    geom_smooth(method = "lm", se = FALSE)
-
-## Combine season long EPA per play to our data set
-goal_offense_wk_17 <- goal_offense_wk_17 %>% 
-    left_join(x = ., y = total_run_epa, by = "posteam")
-
-
 ```
 
-## League Analysis {.tabset}
+# Analysis
 
-### EDA 
+## EDA 
 
 After querying the necessary data, a good start would be to perform an exploratory data analysis.
 
 ```{r league-eda}
 ## Calculate play call proportions conditional on the down
-play_proportions <- goal_offense_wk_17 %>% 
-    tabyl(down, play_type) %>% 
-    adorn_percentages(denominator = "row")
-
-play_proportions
+goal_offense %>% 
+    tbl_cross(
+        row = down,
+        col = play_type,
+        label = c(play_type ~ "Play type",
+                   down ~ "Down"),
+        percent = "row",
+        margin = "row"
+    ) %>% 
+    as_gt() %>% 
+    tab_header(title = "2024 Season", subtitle = "Weeks 1 & 2")
 
 ## Bar plot to visualize play call proportions for league
-goal_offense_wk_17 %>% 
+goal_offense %>% 
     tabyl(down, play_type) %>% 
     pivot_longer(
         cols = -down,
@@ -119,7 +99,7 @@ goal_offense_wk_17 %>%
         labels = c("Pass", "Run")
     ) +
     labs(
-        title = "2023 Play Call Proportions By Down",
+        title = "2024 Play Call Proportions By Down",
         x = "Down",
         y = "",
         fill = "Play Call"
@@ -129,12 +109,12 @@ goal_offense_wk_17 %>%
         
 ```
 
-As may be assumed, during the 2023 season the proportion of pass plays called in goal-to-go situations increases as the down increases. It may also be important to consider where the line of scrimmage is located.
+As may be assumed, during the 2024 season the proportion of pass plays called in goal-to-go situations increases as the down increases. It may also be important to consider what yard line the line of scrimmage is at, expressed as yards from the end zone.
 
 ```{r league-glm-plot}
 ## Create a scatter plot with a logit curve to display pass probability vs. LOS
-goal_offense_wk_17 %>% 
-    ggplot(aes(x = yardline_100, y = as.numeric(pass)-1)) +
+goal_offense %>% 
+    ggplot(aes(x = yardline_100, y = as.numeric(play_type)-1)) +
     geom_point(
         color = "blue4",
         position = position_jitter(width = 0.5, height = 0.015),
@@ -157,13 +137,13 @@ goal_offense_wk_17 %>%
     theme_minimal()
 ```
 
-As may be expected, the probability of the play being a pass increases as the line of scrimmage becomes further from the goal-line. Something to consider, however, is how this may be conditional on the down.
+As may be expected, the probability of the play being a pass increases as the line of scrimmage becomes further from the goal-line. For example, the expected probability of pass with goal-to-go on the 5 yard line is  ~50%, whereas for the 10 yard line the expected pass probability is ~ 65%. (Since we have play time as binary, this could be ~50% and ~35% run probability for the 5 and 10 yard lines, respectively). Something to consider, however, is how this may be conditional on the down.
 
 ```{r league-glm-plot-downs}
 ## Create a scatter plot with a logit curve to display pass
 ## probability vs. LOS conditioned on down
-goal_offense_wk_17 %>% 
-    ggplot(aes(x = yardline_100, y = as.numeric(pass)-1)) +
+goal_offense %>% 
+    ggplot(aes(x = yardline_100, y = as.numeric(play_type)-1)) +
     geom_point(
         color = "blue4",
         position = position_jitter(width = 0.5, height = 0.015),
@@ -180,293 +160,225 @@ goal_offense_wk_17 %>%
     labs(
         title = "Probability of a Pass Given LOS",
         x = "Yardline",
-        y = "Pass Probability"
+        y = "Pass Probability",
+        color = "Down"
     ) +
     theme_minimal()
 ```
 
-The probability of pass, given the LOS, is conditional on the down. As seen in the plot, if the LOS is at the 5 yard line, the probability of a pass is ~35%, ~50%, ~75%, ~99% for 1st, 2nd, 3rd, and 4th down, respectively.
+The probability of pass, given the LOS, is conditional on the down. As seen in the plot, if the LOS is at the 5 yard line, the probability of a pass is ~25%, ~50%, ~80%, ~80% for 1st, 2nd, 3rd, and 4th down, respectively.
 
-### Model Building
+## 2024 weakly informative
 
-Now that the data has been explored and a direction provided, statistical modeling will come into play. Given the EDA, it seems a model that predicts play call probability will want the down and the yard line as input variables. A logistic regression model should work for this purpose.
+Now that the data has been explored and a direction provided, statistical modeling will come into play. Given the visuals, it seems a model that predicts play call probability will want the down and the yard line as input variables. A logistic regression model should work for this purpose. Will leave the priors weakly informative to "let the data talk."
 
-```{r complete-pool-glm}
-## To be able to assess model performance, split data frame into a training/testing
-## set. Can do ~80/20 split.
-
-## Random sample of observations (rows) to use for training data
-set.seed(1995)
-train_obs <- sample(
-        x = c(TRUE, FALSE),
-        size = nrow(goal_offense_wk_17),
-        prob = c(.8, .2),
-        replace = TRUE
+```{r 2024-model-default-priors}
+## Logistic regression model
+fit_bayes_default <- stan_glm(
+    play_type ~ 1 + down + yardline_100,
+    family = binomial,
+    data = goal_offense,
+    prior_intercept = normal(0, 2.5, autoscale = TRUE),
+    prior = normal(0, 2.5, autoscale = TRUE),
+    chains = 4,
+    iter = 5000*2,
+    seed = 1995
 )
 
-## Create test observations
-test_obs <- (!train_obs)
+## Posterior simulations
+fit_bayes_default_sims <- as.data.frame(fit_bayes_default)
 
-## Build logistic regression model
-## Include an interaction for yard line and down based on EDA
-set.seed(1029)
-league_glm <- stan_glm(pass ~ yardline_100 + down + yardline_100:down,
-                       data = goal_offense_wk_17[train_obs,],
-                       family = binomial(link = "logit"),
-                       iter = 5000)
+## Model results
+fit_bayes_default_df <- tidy(fit_bayes_default, conf.int = TRUE, conf.level = 0.95)
+fit_bayes_default_df[,2:5] <- lapply(
+    X = fit_bayes_default_df[,2:5],
+    FUN = function(x) round(x, 3)
+)
 
-print(league_glm, digits = 3)
+## Model results but prettier
+fit_bayes_default_table <- fit_bayes_default_df %>% 
+    gt() %>% 
+    cols_label(
+        term = "Coefficient",
+        estimate = "Estimate",
+        std.error = "SE",
+        conf.low = "95% LCI",
+        conf.high = "95% UCI"
+    ) %>% 
+    tab_header(title = "2024 Model", subtitle = "Using weak priors")
 
-
-
-```
-
-Look at the model's coefficient estimates, pass probability can be compared between downs and/or line of scrimmage (yardline_100). A simple way to interpret these logistic regression estimates is the "divide-by-4" rule. For example, the coefficient for 3rd down is `r round(coef(league_glm)[4], 2)` - divide this by 4 and you get `r round(coef(league_glm)[4]/4, 2)` or `r round(coef(league_glm)[4]/4, 3)*100`%. The probability of a pass call on 3rd down compared to 1st down is `r round(coef(league_glm)[4]/4, 3)*100`% greater, on average. Of course, interaction terms have been included and these must be factored into any interpretations and comparisons.
-
-
-```{r complete-pool-roc}
-## Now to assess model performance using the test data
-## Take 4000 draws from posterior predictive distribution for each observation
-league_pred <- posterior_epred(league_glm,
-                               newdata = goal_offense_wk_17[test_obs,])
-
-## Check model performance using reciever ROC-AUC
-## Note: to run a ROC test, we need a central estimate to represent the posterior
-## predictive distribution for each observation
-league_roc <- pROC::roc(goal_offense_wk_17$pass[test_obs],
-                        apply(league_pred, 2, median))
-pROC::auc(league_roc)
-```
-
-An AUC > 0.7 is an acceptable level of discrimination. Essentially, the model may do an acceptable job of correctly classifying the play call. The goal here is to _aid_ the defensive coordinator, therefore an acceptable level of classification is likely still useful. However, knowing the predicted probability for a given situation is more useful than dichotomizing the information.
-
-
-## Team Analysis {.tabset}
-
-While the League Analysis model may seem useful, it makes more sense to build a model that takes into account the individuality of the team on offense. Each team has its own set of play styles and philosophies.
-
-### EDA
-
-First step is to explore the data, similar to the League Analysis, except this time breaking it down by individual teams. Visualizing all 32 teams may be messy so a handful of teams will be used. The teams with the top 3 and bottom 3 EPA per play are used.
-
-```{r team-eda}
-## Bar plot to visualize play call proportions for a handful of teams
-goal_offense_wk_17 %>% 
-        filter(posteam %in% c("IND", "HOU", "ARI", "BUF", "PHI", "KC")) %>%
-        group_by(posteam, down, play_type) %>% 
-        summarize(n = n()) %>% 
-        pivot_wider(names_from = play_type, values_from = n) %>% 
-        replace_na(list(pass = 0, run = 0)) %>% 
-        mutate(prop_pass = pass/(pass+run),
-               prop_run = run/(pass+run)) %>% 
-        pivot_longer(cols = prop_pass:prop_run,
-                     names_to = "play_type",
-                     values_to = "proportion") %>% 
-        ggplot(aes(x = posteam, y = proportion, fill = play_type)) +
-        geom_col() +
-        scale_fill_manual(values = c("skyblue2", "salmon2"), labels = c("Pass", "Run")) +
-        scale_x_discrete(limits = c("IND", "HOU", "ARI", "BUF", "PHI", "KC")) +
-        labs(title = "2022 Play Call Proportions By Down",
-             subtitle = "Bottom 3 and top 3 EPA per play teams",
-             x = "",
-             y = "Proportion",
-             fill = "Play Call") +
-        facet_wrap(~down) +
-        theme_minimal()
-
+fit_bayes_default_table
 
 ```
 
-Taking the bottom three and top three teams in EPA/play, it is evident that there are some between-team differences in proportion of play calls for a given down. Play call probability may also be dependent on where the line of scrimmage is.
+We can use past data to gather prior information.
 
-```{r team-glm-plot}
-## GLM plot with the regression lines conditional on team
-goal_offense_wk_17 %>% 
-        filter(posteam %in% c("IND", "HOU", "ARI", "BUF", "PHI", "KC")) %>% 
-        ggplot(aes(x = yardline_100, y = as.numeric(pass)-1)) +
-        geom_point(color = "blue4") +
-        geom_smooth(method = "glm",
-                    se = FALSE,
-                    method.args = list(family = "binomial"),
-                    aes(color = posteam)) +
-        labs(title = "Probability of a Pass Given LOS",
-             x = "Yardline",
-             y = "Pass Probability") +
-        theme_minimal()
+```{r 2021-2023-data}
+## Load 2021-2023 data
+pbp_21_23 <- load_pbp(2021:2023)
+goal_offense_21_23 <- pbp_21_23 %>% 
+    filter(
+        !is.na(goal_to_go),
+        !is.na(yardline_100),
+        !is.na(play_type),
+        goal_to_go == 1,
+        play_type %in% c("pass", "run")
+    ) %>% 
+    mutate(
+        down = as.factor(down),
+        play_type = factor(play_type, levels = c("run", "pass"))
+    ) %>% 
+    select(
+        posteam,
+        week,
+        goal_to_go,
+        yardline_100,
+        down,
+        play_type,
+        defteam,
+        week
+    )
+
+## Calculate play call proportions conditional on the down
+goal_offense_21_23 %>% 
+    tbl_cross(
+        row = down,
+        col = play_type,
+        label = c(play_type ~ "Play type",
+                   down ~ "Down"),
+        percent = "row",
+        margin = "row"
+    ) %>% 
+    as_gt() %>% 
+    tab_header(title = "2021-2023 Seasons")
 ```
 
-Each of the teams have regression lines that are vastly different. This indicates that the probability of calling a pass or run dependent on the line of scrimmage differ from team to team. The regression lines also are likely to differ by down
+## 2021-2023 Model
 
-```{r team-glm-plot-downs}
-goal_offense_wk_17 %>% 
-        filter(posteam %in% c("IND", "HOU", "ARI", "BUF", "PHI", "KC")) %>% 
-        ggplot(aes(x = yardline_100, y = as.numeric(pass)-1)) +
-        geom_point(color = "blue4") +
-        geom_smooth(method = "glm",
-                    se = FALSE,
-                    method.args = list(family = "binomial"),
-                    aes(color = down)) +
-        labs(title = "Probability of a Pass Given LOS",
-             x = "Yardline",
-             y = "Pass Probability") +
-        facet_wrap(~posteam, scale = "free_x") +
-        theme_minimal()
+Bayesian model with data from 2021-2023. Default priors.
 
+```{r previous-model}
+## Previous (2021-2023) Bayesion model with default priors
+fit_bayes_21_23 <- stan_glm(
+    play_type ~ 1 + down + yardline_100,
+    family = binomial,
+    data = goal_offense_21_23,
+    prior_intercept = normal(0, 2.5, autoscale = TRUE),
+    prior = normal(0, 2.5, autoscale = TRUE),
+    chains = 4,
+    iter = 5000*2,
+    seed = 1995
+)
+
+## Results
+fit_bayes_21_23_df <- tidy(fit_bayes_21_23, conf.int = TRUE, conf.level = 0.95)
+fit_bayes_21_23_df[,2:5] <- lapply(
+    X = fit_bayes_21_23_df[,2:5],
+    FUN = function(x) round(x, 3)
+)
+
+## Results but make it nice
+fit_bayes_21_23_table <- fit_bayes_21_23_df %>% 
+    gt() %>% 
+    cols_label(
+        term = "Coefficient",
+        estimate = "Estimate",
+        std.error = "SE",
+        conf.low = "95% LCI",
+        conf.high = "95% UCI"
+    ) %>% 
+    tab_header(title = "2021-2023 Model")
+
+fit_bayes_21_23_table
 ```
 
-Each team's regression line for the relationship of line of scrimmage and play call probability differ depending on the down. Note: some teams either have complete separation (IND 3rd down) or only called one type of play call (ARI 3rd down). This would be an issue if building a regression model for an individual team, however, that is not the route that will be taken.
+## 2024 Informative
 
-### Model Building
+Bayesian model with informative priors
 
-Considering the possible differences in play calling probability between teams, a model that allows parameters to vary by each team could be beneficial. A good starting place is the League Analysis model, which can altered and built to be a _multilevel_ model. The League Analysis uses a _complete pooling_ approach where the parameters used in the linear equation for predicting an outcome do not consider variation between teams. A multilevel model, conversely, uses _partial pooling_ that considers between-team variation and alters the model parameters specific to each team. The parameters that are allowed to vary by group are _random effects_. Ultimately, this should make for a more individualized approach!
+```{r 2024-model-inform-priors}
+## Logistic regression model with informative priors
+fit_bayes_informative <- stan_glm(
+    play_type ~ 1 + down + yardline_100,
+    family = binomial,
+    data = goal_offense,
+    prior_intercept = normal(0, 0.05),
+    prior = c(normal(0.85, 0.12),
+              normal(1.75, 0.15),
+              normal(1.70, 0.30),
+              normal(0.13, 0.02)),
+    chains = 4,
+    iter = 5000*2,
+    seed = 1995
+)
 
-```{r mlm-model}
-## Create a multilevel logistic model with varying slopes using training data set
-set.seed(1029)
-var_int <- stan_glmer(pass ~ yardline_100 + down + yardline_100:down + (1|posteam),
-                       data = goal_offense_wk_17[train_obs,],
-                       family = binomial(link = "logit"),
-                       iter = 5000)
+## Posterior simulations
+fit_bayes_informative_sims <- as.data.frame(fit_bayes_informative)
 
-print(var_int, digits = 3)
+
+## Model results
+fit_bayes_informative_df <- tidy(
+    fit_bayes_informative,
+    conf.int = TRUE,
+    conf.level = 0.95)
+
+fit_bayes_informative_df[,2:5] <- lapply(
+    X = fit_bayes_informative_df[,2:5],
+    FUN = function(x) round(x, 3)
+)
+
+## Model results makeover
+fit_bayes_informative_table <- fit_bayes_informative_df %>% 
+    gt() %>% 
+    cols_label(
+        term = "Coefficient",
+        estimate = "Estimate",
+        std.error = "SE",
+        conf.low = "95% LCI",
+        conf.high = "95% UCI"
+    ) %>% 
+    tab_header(title = "2024 Model", subtitle = "Using informative priors")
+
+fit_bayes_informative_table
 ```
 
-The parameter estimates are nearly identical (potentially slightly different due to Bayesian approach used for parameter estimation). However, the model provided intercept error terms for each team, allowing for a team-specific intercept when predicting pass probability.
+Now to compare the posteriors
 
-```{r ranef-assessment}
-## Plot visualizing intercept error terms
-lattice::dotplot(ranef(var_int, which = "posteam", condVar = TRUE))
+```{r posterior-viz-comp}
+## Master data frame with both posterior simulations
+fit_bayes_posterior_comp <- bind_rows(
+    fit_bayes_default_sims,
+    fit_bayes_informative_sims
+) %>% 
+    mutate(
+        priors = as.factor(rep(c("Weakly informative", "Informative"), each = 20000))
+    )
 
+## Visualize posteriors
+fit_bayes_posterior_comp_plot <- fit_bayes_posterior_comp %>% 
+    select(-`(Intercept)`) %>% 
+    pivot_longer(
+        cols = -priors,
+        names_to = "parameter"
+    ) %>% 
+    ggplot(aes(x = value)) +
+    geom_density(
+        aes(color = priors, fill = priors),
+        linewidth = 1.5,
+        alpha = 0.4
+    ) +
+    facet_wrap(~parameter, scales = "free") +
+    labs(
+        title = "Posterior parameter estimations",
+        x = "Coefficient value"
+    ) +
+    theme_minimal() +
+    theme(
+        strip.background = element_rect(fill = "grey"),
+        panel.border = element_rect(color = "black", fill = NA),
+        legend.position = "bottom"
+    )
+
+fit_bayes_posterior_comp_plot
 ```
-
-This plot displays the intercept error term for each team. This further supports a individualized approach to predictining goal-to-go play call probability, evident by the between-team variance in the error terms. A negative error term can be interpreted as lower probability of a pass play and a positive error term as a greater probability of a pass play. For example, the Philadelphia Eagles, a run-heavy offense, have an error term of
-`r as_tibble(ranef(var_int)) %>% filter(grp == "PHI") %>% pull(condval) %>% round(.,2)`; conversely, the LA Chargers, a pass-heavy offense have an error term of `r as_tibble(ranef(var_int)) %>% filter(grp == "LAC") %>% pull(condval) %>% round(.,2)`.
-
-
-```{r mlm-model-roc}
-## Predict pass plays for test data set
-team_pred <- posterior_epred(var_int,
-                             newdata = goal_offense_wk_17[test_obs,])
-
-## Calculate ROC
-team_roc <- pROC::roc(goal_offense_wk_17$pass[test_obs],
-                      apply(team_pred, 2, median))
-
-pROC::auc(team_roc)
-
-```
-
-The AUC for the multilevel model is greater than 0.7, so it is still performing at an acceptable level.
-
-The multilevel logistic model seems to be an improvement from the simple logistic model; this is largely due to the slope coefficient varying by team, thereby providing a team-by-team approach. As of now, the model only has individual-level predictors, the down and the line of scrimmage (yardline_100). A potential improvement to the model would be the addition of a _group-level_ predictor that can explain some of the between-team variance. It would make sense that teams with a greater run EPA would be less likely to pass the ball compared to teams with a lower run EPA, therefore we will use Total Run EPA as a group-level predictor.
-
-```{r mlm-grp-predvar}
-## Multilevel model with varying slopes and a group-level predictor term: total
-## run EPA
-set.seed(1029)
-grp_lvl_variable <- stan_glmer(pass ~ yardline_100 + down + yardline_100:down + szn_epa + (1|posteam),
-                       data = goal_offense_wk_17[train_obs,],
-                       family = binomial(link = "logit"),
-                       iter = 5000)
-
-print(grp_lvl_variable, digits = 3)
-
-## Plot visualizing intercept error terms
-lattice::dotplot(ranef(grp_lvl_variable, which = "posteam", condVar = TRUE))
-
-```
-
-The addition of Total Run EPA as a group-level predictor variable did indeed explain some of the variance in pass probability between teams. This can be seen as the decrease in the varying-intercept standard deviation, under "Error terms."
-
-## Prediction Comparison
-
-Now to demonstrate how these models could be used. Similar to how the predictive distributions were drawn from for the test data set, the same can be down for a specific goal-to-go situation. For this example, 2nd and Goal at the 6 yardline will be used.
-
-```{r complete-pool-pred}
-## Draw from the predictive distribution of the complete pool logistic
-## regression model. 
-pred_2nd_6 <- posterior_epred(league_glm,
-                              newdata = data.frame(down = "2", yardline_100 = 6))
-
-colnames(pred_2nd_6) <- "second_six"
-pred_2nd_6 %>% 
-        as_tibble() %>% 
-        ggplot(aes(x = second_six)) +
-        geom_histogram(fill = "grey", color = "grey33") +
-        geom_vline(xintercept = c(median(pred_2nd_6),
-                                  HDInterval::hdi(pred_2nd_6)[1],
-                                  HDInterval::hdi(pred_2nd_6)[2]),
-                   linetype = "dashed",
-                   color = c("blue", "seagreen3", "seagreen3"),
-                   linewidth = 1.5) +
-        labs(title = "Predictive Distribution: Pass Call on 2nd and Goal at the 6",
-             subtitle = paste0("Median prediction: ", round(median(pred_2nd_6),2), "\n95% HDI: [", round(HDInterval::hdi(pred_2nd_6)[1], 2), ", ", round(HDInterval::hdi(pred_2nd_6)[2], 2), "]"),
-             x = "",
-             y = "Count") +
-        theme_minimal()
-
-```
-
-The model predicts a `r round(median(pred_2nd_6*100))`% probability the play call will be a pass on 2nd and Goal at the 6 to be most likely. There is unavoidable error in the model, however, so there is uncertainty surrounding this prediction. Given the standard error from the predictive distribution, there is a 95% chance the probability of a pass is `r round(HDInterval::hdi(pred_2nd_6*100)[1])`-`r round(HDInterval::hdi(pred_2nd_6*100)[2])`%. Put simply, when predicting the probability of pass on 2nd and Goal at the 6, 95% of the time the probability will be `r round(HDInterval::hdi(pred_2nd_6*100)[1])`-`r round(HDInterval::hdi(pred_2nd_6*100)[2])`% according to the model. Note that to run call probability is just the inverse of the pass probability (e.g., the model predicts a `r 100 - round(median(pred_2nd_6*100))`% probability of run in this goal line example).
-
-<br>
-<br>
-
-The predictive distribution will look different when using the multilevel model. Continuing on the previous prediction of 2nd and Goal on the 6 yardline: what if it is against a specific team? For this example, the previous scenario will be used but this time the prediction will be specific to the offensive team being the Philadelphia Eagles.
-
-```{r par-pool-pred}
-## Draw from the posterior predictive distribution
-## Make sure to add group-level predictor and varying term
-pred_2nd_6_mlm <- posterior_epred(grp_lvl_variable,
-                              newdata = data.frame(posteam = "PHI", down = "2", yardline_100 = 6,
-                                                   szn_epa = 87.1))
-
-colnames(pred_2nd_6_mlm) <- "second_six"
-pred_2nd_6_mlm %>% 
-        as_tibble() %>% 
-        ggplot(aes(x = second_six)) +
-        geom_histogram(fill = "grey", color = "grey33") +
-        geom_vline(xintercept = c(median(pred_2nd_6_mlm),
-                                  HDInterval::hdi(pred_2nd_6_mlm)[1],
-                                  HDInterval::hdi(pred_2nd_6_mlm)[2]),
-                   linetype = "dashed",
-                   color = c("blue", "seagreen3", "seagreen3"),
-                   linewidth = 1.5) +
-        labs(title = "Predictive Distribution: Pass Call on 2nd and Goal at the 6",
-             subtitle = paste0("Median prediction: ", round(median(pred_2nd_6_mlm),2), "\n95% HDI: [", round(HDInterval::hdi(pred_2nd_6_mlm)[1], 2), ", ", round(HDInterval::hdi(pred_2nd_6_mlm)[2], 2), "]"),
-             x = "",
-             y = "Count") +
-        theme_minimal()
-
-```
-
-Allowing the model intercept to vary by team, it can be seen that the median probability of a pass play is different with the simple logistic model prediction at `r round(median(pred_2nd_6),3)*100`% and the multilevel logistic model prediction at `r round(median(pred_2nd_6_mlm),3)*100`%. This seems intuitive given the Philadelphia Eagles are a run heavy offense. The standard error of the posterior predictions is greater for the multilevel model, due to the variance around Philadelphia's intercept error term, at `r round(mad(pred_2nd_6_mlm),3)*100`%; conversely, the standard error of the posterior predictions from the simple logistic model is `r round(mad(pred_2nd_6),3)*100`%. Nonetheless, the greater standard error is a trade off for a prediction estimate that is specific to the team.
-
-```{r ppd-comp}
-predictions <- tibble(`Logistic Regression` = pred_2nd_6[,1],
-                      `MLM Logistic Regression` = pred_2nd_6_mlm[,1])
-
-predictions %>% 
-        pivot_longer(cols = everything()) %>% 
-        ggplot(aes(x = value, color = name, fill = name)) +
-        geom_density(alpha = 0.6) +
-        scale_fill_manual(values = c("#004C54", "#A5ACAF")) +
-        scale_color_manual(values = c("#004C54", "#A5ACAF")) +
-        labs(title = "Predictive Distribution Comparison",
-             subtitle = "Philadelphia Eagles 2nd and Goal at the 6",
-             x = "Pass Probability",
-             y = "Density",
-             fill = "",
-             color = "") +
-        theme_minimal() +
-        theme(legend.position = "bottom")
-
-
-```
-
-
-<br>
-
-Using this model, an interactive dashboard or report can be provided to the defensive coordinator where the down and yard line can be inputted, subsequently predicting the probability of the play call in a goal-to-go set of downs. This may be useful for the defensive coordinator when they are curating a game plan, or in-game when they want a little extra insight into what the offense may do.
-
 
